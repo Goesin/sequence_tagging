@@ -1,9 +1,12 @@
+"""
+Enhancing Pre-trained Chinese Character Representation with Word-aligned Attention 代码(非原文作者实现)
+"""
 import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import BertModel,BertPreTrainedModel
+from transformers import BertModel, BertPreTrainedModel
 from models.layers.crf_layers_pytorch import CRF
 from torch.nn import CrossEntropyLoss
 
@@ -12,12 +15,21 @@ class BertForMWA(BertPreTrainedModel):
     def __init__(self, config, label2ids, device):
         super(BertForMWA, self).__init__(config)
         # config.output_attentions = True
-        self.bert = BertModel(config)
+        self.bert = BertModel(config) #配置Bert模型
         # TODO check with Google if it's normal there is no dropout on the token classifier of SQuAD in the TF version
         # self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.activation = nn.ReLU()
         self.label_num = len(label2ids)
-        self.head_num = 1
+        self.head_num = 1 #1个注意力头
+        '''
+        "我在最初实现的时候，确实是使用了多头注意力机制，然而实现出来的效果确实不佳。
+        原始的BERT+softmax模型在test数据集上大概有0.943的f1分数（整合了实体词+实体类型的span-level f1）。
+        使用了本文的方法，基于多头注意力机制，在几次试验中，均只能得到0.940左右的分数，基本没有提升。
+        后来，我逐渐降低了注意力头的个数，从12减到了6，再从6减到了1。
+        最终的效果居然是越来越好，把注意力头减到1时，能够得到0.951左右的分数，基本上能有0.8-1的提升。
+        这个结果至少可以说明多头注意力机制并非对所有的数据集均适用，还需要多方测试。"
+        -- https://mp.weixin.qq.com/s/FBHjAGLQboufB2pTLsPp4A
+        '''
 
         self.mix_lambda = nn.Parameter(torch.tensor(0.5))
 
@@ -42,8 +54,8 @@ class BertForMWA(BertPreTrainedModel):
         self.dropout_2 = nn.Dropout(config.attention_probs_dropout_prob)
         self.dropout_3 = nn.Dropout(config.attention_probs_dropout_prob)
         self.qa_outputs = nn.Linear(config.hidden_size, len(label2ids))
-        self.crf = CRF(tagset_size=len(label2ids), tag_dictionary=label2ids, device=device, is_bert=True)
-        self.init_weights()
+        self.crf = CRF(tagset_size=len(label2ids), tag_dictionary=label2ids, device=device, is_bert=True) #既然博文作者提到使用CRF没有什么提升, 为什么还保留了CRF层?
+        self.init_weights() #初始化权重
 
     def forward(self, input_ids, word_length_1, word_length_2, word_length_3, word_slice_1, word_slice_2, word_slice_3,
                 token_type_ids=None, input_lens=None, attention_mask=None, labels=None):
@@ -140,6 +152,12 @@ class BertForMWA(BertPreTrainedModel):
         mask = torch.zeros(att_weights.size()).to(seg_length.device)
         # iterate till encounter padding tag, for early stopping and accelerate.
         stop_condition = (seg_length != 0).sum(dim=1)
+
+        '''
+        由于需要根据不同分词的子串对不同长度的字符向量集合进行pooling的计算，因此很难实现一个高效的并行化计算，
+        简而言之，就是必须使用for循环来处理序列，这样的话，即使用大batch_size，也无法提升GPU的使用效率
+        '''
+
         for batch_idx in range(batch_size):
             if att_weights[batch_idx].nelement() == 0:
                 continue

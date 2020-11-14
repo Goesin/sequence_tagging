@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-BASE_DIR = Path('slot_extraction')
+BASE_DIR = Path('slot_extraction') #这是一个路径吗?
 bert_config = {
     'data_dir':'data',
     'vocab_file':"vocab.txt",
